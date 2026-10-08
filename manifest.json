@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SeLoger QuickSend",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "One-click contact submission from SeLoger listing cards with background automation and card feedback.",
   "permissions": [
     "activeTab",

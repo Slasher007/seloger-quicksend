@@ -265,12 +265,27 @@
       return { done: true, state: 'success', evidence: 'contact form removed from page' };
     }
 
-    // Visible page text, with scripts/styles/templates stripped out.
-    const clone = document.body.cloneNode(true);
-    for (const el of clone.querySelectorAll('script, style, noscript, template, form, svg')) {
-      el.remove();
+    // Visible page text, without cloning the DOM (cloning body every poll
+    // spikes memory on heavy listing pages). Walk rendered text nodes only.
+    let pageText = '';
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        const tag = parent.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' ||
+            tag === 'TEMPLATE' || tag === 'FORM' || tag === 'SVG') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = node.textContent;
+      if (t) pageText += t.toLowerCase() + ' ';
+      if (pageText.length > 20000) break;
     }
-    const pageText = (clone.textContent || '').toLowerCase();
     if (OK_RE.test(pageText)) {
       return { done: true, state: 'success', evidence: 'confirmation text on page' };
     }
@@ -284,6 +299,10 @@
 
   async function send(url, message, contact) {
     const { id: tabId } = await chrome.tabs.create({ url, active: false });
+    // Register the tab before any await: if the service worker is killed
+    // mid-send, the entry is already persisted and the startup sweep below
+    // can close the orphaned hidden tab.
+    await trackTab(tabId);
     try {
       await waitForComplete(tabId, LOAD_TIMEOUT);
       await delay(1500); // let React hydrate
@@ -312,9 +331,70 @@
           : (!outcome || outcome.state === 'pending' ? 'No confirmation seen in time' : null)
       };
     } finally {
+      await untrackTab(tabId);
       chrome.tabs.remove(tabId).catch(() => {});
     }
   }
+
+  // --- orphaned-tab bookkeeping -------------------------------------------
+  // MV3 service workers are killed after ~30s idle, but a send can take ~75s.
+  // If the worker dies mid-send the `finally` above never runs, so the hidden
+  // tab would leak. We persist the open tab ids and sweep them on startup.
+
+  const OPEN_TABS_KEY = 'quicksend_open_tabs';
+
+  async function trackTab(tabId) {
+    try {
+      const data = await chrome.storage.local.get(OPEN_TABS_KEY);
+      const tabs = data[OPEN_TABS_KEY] || [];
+      if (!tabs.includes(tabId)) tabs.push(tabId);
+      await chrome.storage.local.set({ [OPEN_TABS_KEY]: tabs });
+    } catch (e) {
+      console.error('[SeLoger QuickSend] could not track tab:', e && e.message);
+    }
+  }
+
+  async function untrackTab(tabId) {
+    try {
+      const data = await chrome.storage.local.get(OPEN_TABS_KEY);
+      const tabs = data[OPEN_TABS_KEY] || [];
+      const next = tabs.filter(id => id !== tabId);
+      if (next.length !== tabs.length) {
+        await chrome.storage.local.set({ [OPEN_TABS_KEY]: next });
+      }
+    } catch (e) {
+      console.error('[SeLoger QuickSend] could not untrack tab:', e && e.message);
+    }
+  }
+
+  // On worker startup, close any tab left behind by a previous, killed run.
+  async function sweepOrphanedTabs() {
+    let tabs = [];
+    try {
+      const data = await chrome.storage.local.get(OPEN_TABS_KEY);
+      tabs = data[OPEN_TABS_KEY] || [];
+    } catch (e) {
+      return;
+    }
+    if (!tabs.length) return;
+    await chrome.storage.local.set({ [OPEN_TABS_KEY]: [] });
+    for (const tabId of tabs) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        // Only close our own hidden automation tabs, never a user tab that
+        // reused the id after the original was closed.
+        if (tab && !tab.active && tab.url && tab.url.startsWith('https://www.seloger.com/')) {
+          await chrome.tabs.remove(tabId);
+          console.info('[SeLoger QuickSend] closed orphaned tab', tabId);
+        }
+      } catch (e) {
+        // Tab no longer exists - already gone.
+      }
+    }
+  }
+
+  sweepOrphanedTabs();
+  chrome.runtime.onStartup.addListener(sweepOrphanedTabs);
 
   let busy = false;
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

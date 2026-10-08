@@ -1,6 +1,6 @@
 // SeLoger QuickSend - One-click background submission from listing cards
 (() => {
-  const BUILD = 'tag-5';
+  const BUILD = 'tag-6';
   console.info('[SeLoger QuickSend] content script loaded, build=' + BUILD);
   const MESSAGE = "Bonjour,\n\nJe suis très intéressé par votre logement. Je dois prochainement déménager à Lyon pour des raisons professionnelles, suite à une nouvelle prise de poste.\n\nVotre logement correspond bien à ma recherche. Je serais donc intéressé pour avoir plus d’informations et, si possible, organiser une visite.\n\nMerci d’avance pour votre retour.\n\nBien cordialement,\nMamadou";
   const CONTACT = {
@@ -34,6 +34,10 @@
 
   let isProcessing = false;
   let observer = null;
+  // Re-entrancy guard: scan() mutates the DOM, which fires the observer,
+  // which would otherwise call scan() again in an unbounded loop.
+  let scanning = false;
+  let scanScheduled = false;
   // Keyed by normalized listing URL: key -> { sentAt, url, listingId, message }
   let sentMap = {};
 
@@ -144,11 +148,18 @@
       card.appendChild(tag);
     }
     const when = entry.sentAt ? dateFmt.format(new Date(entry.sentAt)) : '';
-    tag.textContent = when ? `Sent ${when}` : 'Sent';
+    const label = when ? `Sent ${when}` : 'Sent';
+    // Only touch the DOM when the label actually changes: writing the same
+    // textContent still replaces the text node and re-triggers the observer.
+    if (tag.textContent !== label) {
+      tag.textContent = label;
+    }
 
     const btn = card.querySelector('.quick-send-btn');
     if (btn && !btn.classList.contains('quick-send-processing')) {
-      btn.textContent = 'Sent ✓';
+      if (btn.textContent !== 'Sent ✓') {
+        btn.textContent = 'Sent ✓';
+      }
       btn.classList.add('quick-send-sent');
     }
     return entry;
@@ -273,13 +284,30 @@
   }
 
   function scan() {
-    const cards = document.querySelectorAll(CARD_SELECTORS.join(','));
-    for (const card of cards) {
-      if (card.offsetParent !== null || card === document.body || getComputedStyle(card).display !== 'none') {
-        injectButton(card);
-        applySentState(card);
+    if (scanning) return;
+    scanning = true;
+    try {
+      const cards = document.querySelectorAll(CARD_SELECTORS.join(','));
+      for (const card of cards) {
+        if (card.offsetParent !== null || card === document.body || getComputedStyle(card).display !== 'none') {
+          injectButton(card);
+          applySentState(card);
+        }
       }
+    } finally {
+      scanning = false;
     }
+  }
+
+  // Coalesce bursts of mutations (and the periodic rescan) into one scan per
+  // animation frame instead of scanning once per mutation batch.
+  function scheduleScan() {
+    if (scanScheduled) return;
+    scanScheduled = true;
+    requestAnimationFrame(() => {
+      scanScheduled = false;
+      scan();
+    });
   }
 
   async function init() {
@@ -288,7 +316,8 @@
     observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
         if (m.addedNodes.length) {
-          scan();
+          scheduleScan();
+          return;
         }
       }
     });
@@ -305,5 +334,5 @@
   }
 
   // Re-scan periodically for SPAs
-  setInterval(scan, 2000);
+  setInterval(scheduleScan, 4000);
 })();

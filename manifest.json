@@ -1,15 +1,20 @@
 {
   "manifest_version": 3,
   "name": "SeLoger QuickSend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "One-click contact submission from SeLoger listing cards with background automation and card feedback.",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "https://www.seloger.com/*"
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SeLoger QuickSend - sent log"
+  },
   "background": {
     "service_worker": "background.js"
   },

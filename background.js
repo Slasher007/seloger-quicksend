@@ -9,8 +9,47 @@
   const READY_TIMEOUT = 25000;
   const RESULT_TIMEOUT = 20000;
   const POLL_MS = 400;
+  const SENT_KEY = 'quicksend_log';
 
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // Listing URLs carry the whole search query plus a hash, so the log is keyed
+  // on origin + pathname only. Keep this identical to content.js.
+  function normalizeUrl(url) {
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname.replace(/\/+$/, '');
+    } catch (e) {
+      return url;
+    }
+  }
+
+  function listingIdFromUrl(url) {
+    try {
+      const parts = new URL(url).pathname.split('/').filter(Boolean);
+      return parts[parts.length - 1] || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // Persist one entry per listing; re-sending the same listing updates its
+  // timestamp rather than adding a duplicate row.
+  async function recordSent(url, message) {
+    const key = normalizeUrl(url);
+    const entry = {
+      key,
+      url,
+      listingId: listingIdFromUrl(url),
+      sentAt: new Date().toISOString(),
+      message
+    };
+    const data = await chrome.storage.local.get(SENT_KEY);
+    const log = data[SENT_KEY] || {};
+    log[key] = entry;
+    await chrome.storage.local.set({ [SENT_KEY]: log });
+    return entry;
+  }
 
   function waitForComplete(tabId, timeout) {
     return new Promise((resolve, reject) => {
@@ -288,6 +327,16 @@
     (async () => {
       try {
         const result = await send(msg.url, msg.message, msg.contact);
+        if (result.ok) {
+          // The log is the record of a successful send, so a storage failure
+          // must not turn the send itself into a reported failure.
+          try {
+            result.entry = await recordSent(msg.url, msg.message);
+          } catch (e) {
+            console.error('[SeLoger QuickSend] could not record send:', e && e.message);
+            result.entry = null;
+          }
+        }
         console.log('[SeLoger QuickSend] background result:', JSON.stringify(result));
         sendResponse(result);
       } catch (e) {

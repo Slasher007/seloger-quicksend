@@ -4,28 +4,99 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 240px;
+      width: 320px;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       padding: 12px;
       margin: 0;
+      font-size: 13px;
+      color: #212121;
     }
     h1 {
       font-size: 14px;
-      margin: 0 0 8px 0;
+      margin: 0 0 4px 0;
     }
-    p {
+    #count {
       font-size: 12px;
-      margin: 4px 0;
-      color: #333;
+      color: #555;
+      margin: 0 0 10px 0;
     }
-    small {
+    #list {
+      max-height: 260px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .row:last-child {
+      border-bottom: 0;
+    }
+    .row .id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 180px;
+    }
+    .row .date {
       color: #666;
+      white-space: nowrap;
+    }
+    .empty {
+      padding: 14px 8px;
+      font-size: 12px;
+      color: #888;
+      text-align: center;
+    }
+    .actions {
+      display: flex;
+      gap: 6px;
+    }
+    button {
+      flex: 1;
+      padding: 7px 6px;
+      font-size: 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #f5f5f5;
+    }
+    button.primary {
+      background: #ff6f00;
+      border-color: #ff6f00;
+      color: #fff;
+    }
+    button.primary:hover {
+      background: #ff7f1f;
+    }
+    #status {
+      font-size: 11px;
+      color: #2e7d32;
+      margin-top: 6px;
+      min-height: 14px;
     }
   </style>
 </head>
 <body>
   <h1>SeLoger QuickSend</h1>
-  <p>One-click send from listing cards.</p>
-  <p><small>Works on https://www.seloger.com/</small></p>
+  <p id="count">Loading…</p>
+  <div id="list"><div class="empty">No sends recorded yet.</div></div>
+  <div class="actions">
+    <button id="csv" class="primary">Export CSV</button>
+    <button id="json">Export JSON</button>
+    <button id="clear">Clear</button>
+  </div>
+  <div id="status"></div>
+  <script src="popup.js"></script>
 </body>
 </html>

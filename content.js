@@ -1,6 +1,6 @@
 // SeLoger QuickSend - One-click background submission from listing cards
 (() => {
-  const BUILD = 'tabdrive-4';
+  const BUILD = 'tag-5';
   console.info('[SeLoger QuickSend] content script loaded, build=' + BUILD);
   const MESSAGE = "Bonjour,\n\nJe suis très intéressé par votre logement. Je dois prochainement déménager à Lyon pour des raisons professionnelles, suite à une nouvelle prise de poste.\n\nVotre logement correspond bien à ma recherche. Je serais donc intéressé pour avoir plus d’informations et, si possible, organiser une visite.\n\nMerci d’avance pour votre retour.\n\nBien cordialement,\nMamadou";
   const CONTACT = {
@@ -8,6 +8,8 @@
     email: "kebem221@gmail.com",
     phone: "+33760349649"
   };
+
+  const SENT_KEY = 'quicksend_log';
 
   const CARD_SELECTORS = [
     '[data-testid="serp-core-classified-card-testid"]',
@@ -26,8 +28,34 @@
     'a[href*="seloger.com/"]'
   ];
 
+  const dateFmt = new Intl.DateTimeFormat('fr-FR', {
+    day: '2-digit', month: '2-digit', year: 'numeric'
+  });
+
   let isProcessing = false;
   let observer = null;
+  // Keyed by normalized listing URL: key -> { sentAt, url, listingId, message }
+  let sentMap = {};
+
+  // Keep this identical to background.js.
+  function normalizeUrl(url) {
+    try {
+      const u = new URL(url);
+      return u.origin + u.pathname.replace(/\/+$/, '');
+    } catch (e) {
+      return url;
+    }
+  }
+
+  async function loadSentMap() {
+    try {
+      const data = await chrome.storage.local.get(SENT_KEY);
+      sentMap = data[SENT_KEY] || {};
+    } catch (e) {
+      console.error('[SeLoger QuickSend] could not read sent log:', e);
+      sentMap = {};
+    }
+  }
 
   function createToast(text, type = 'info') {
     const existing = document.querySelector('.qs-feedback-toast');
@@ -98,6 +126,34 @@
     }
   }
 
+  // Badge + button state for a listing that was already sent. Safe to call
+  // repeatedly (every scan) - it only ever creates the tag once.
+  function applySentState(card) {
+    const url = getPropertyUrl(card);
+    if (!url) return null;
+    const entry = sentMap[normalizeUrl(url)];
+    if (!entry) return null;
+
+    card.classList.add('qs-card-sent');
+    card.style.position = 'relative';
+
+    let tag = card.querySelector('.qs-sent-tag');
+    if (!tag) {
+      tag = document.createElement('div');
+      tag.className = 'qs-sent-tag';
+      card.appendChild(tag);
+    }
+    const when = entry.sentAt ? dateFmt.format(new Date(entry.sentAt)) : '';
+    tag.textContent = when ? `Sent ${when}` : 'Sent';
+
+    const btn = card.querySelector('.quick-send-btn');
+    if (btn && !btn.classList.contains('quick-send-processing')) {
+      btn.textContent = 'Sent ✓';
+      btn.classList.add('quick-send-sent');
+    }
+    return entry;
+  }
+
   // SeLoger's contact form has no action attribute - React intercepts the
   // submit and calls its own API. So there is nothing to POST to from here:
   // the background worker opens the property page in a hidden tab, fills the
@@ -155,6 +211,8 @@
     setCardState(card, 'processing');
     createToast('Submitting in background...', 'info');
 
+    let entry = null;
+
     try {
       const result = await sendToBackground({
         type: 'quicksend:send',
@@ -164,9 +222,19 @@
       });
       console.log('[SeLoger QuickSend] result:', JSON.stringify(result));
 
+      // Remember the send even if the background worker could not persist it,
+      // so the tag still shows for this session.
+      entry = result.entry || {
+        key: normalizeUrl(url),
+        url,
+        sentAt: new Date().toISOString()
+      };
+      sentMap[entry.key] = entry;
+      applySentState(card);
+
       btn.classList.remove('quick-send-processing');
       btn.textContent = 'Sent ✓';
-      btn.classList.add('quick-send-success');
+      btn.classList.add('quick-send-sent', 'quick-send-success');
       setCardState(card, 'success');
       if (result.unfilled && result.unfilled.length) {
         createToast(`Sent, but blank required: ${result.unfilled.join(', ')}`, 'info');
@@ -185,9 +253,17 @@
       setTimeout(() => {
         btn.disabled = false;
         btn.classList.remove('quick-send-success', 'quick-send-error');
-        btn.textContent = 'Quick send';
+        // A listing that was sent keeps its "Sent ✓" label instead of
+        // reverting to "Quick send" like a failed attempt does.
+        if (entry) {
+          btn.textContent = 'Sent ✓';
+          btn.classList.add('quick-send-sent');
+        } else {
+          btn.textContent = 'Quick send';
+          btn.classList.remove('quick-send-sent');
+        }
       }, 1800);
-      // Keep success/error card state briefly
+      // Keep the transient success/error tint briefly; the sent tag stays.
       setTimeout(() => {
         if (card.classList.contains('qs-card-success') || card.classList.contains('qs-card-error')) {
           setCardState(card, null);
@@ -201,11 +277,13 @@
     for (const card of cards) {
       if (card.offsetParent !== null || card === document.body || getComputedStyle(card).display !== 'none') {
         injectButton(card);
+        applySentState(card);
       }
     }
   }
 
-  function init() {
+  async function init() {
+    await loadSentMap();
     scan();
     observer = new MutationObserver((mutations) => {
       for (const m of mutations) {

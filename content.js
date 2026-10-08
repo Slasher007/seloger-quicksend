@@ -1,11 +1,12 @@
 // SeLoger QuickSend - One-click background submission from listing cards
 (() => {
-  const MESSAGE = "Bonjour,\n\nJe dois déménager à Lyon début janvier pour des raisons professionnelles.\n\nMerci d'avance.\n\nCordialement,\nMamadou KEBE";
+  const BUILD = 'tabdrive-4';
+  console.info('[SeLoger QuickSend] content script loaded, build=' + BUILD);
+  const MESSAGE = "Bonjour,\n\nJe suis très intéressé par votre logement. Je dois prochainement déménager à Lyon pour des raisons professionnelles, suite à une nouvelle prise de poste.\n\nVotre logement correspond bien à ma recherche. Je serais donc intéressé pour avoir plus d’informations et, si possible, organiser une visite.\n\nMerci d’avance pour votre retour.\n\nBien cordialement,\nMamadou";
   const CONTACT = {
     fullName: "Mamadou KEBE",
     email: "kebem221@gmail.com",
-    phone: "+33760349649",
-    status: "Non propriétaire"
+    phone: "+33760349649"
   };
 
   const CARD_SELECTORS = [
@@ -21,6 +22,7 @@
     '[data-testid="card-mfe-covering-link-testid"]',
     'a[data-testid*="covering-link"]',
     'a[href*="/annonces/"]',
+    'a[href*="/annonce/"]',
     'a[href*="seloger.com/"]'
   ];
 
@@ -70,7 +72,7 @@
     const links = card.querySelectorAll('a[href]');
     for (const link of links) {
       const href = link.getAttribute('href') || '';
-      if (href.includes('/annonces/') || href.includes('seloger.com/')) {
+      if (href.includes('/annonce') || href.includes('seloger.com/')) {
         return link;
       }
     }
@@ -94,6 +96,21 @@
     if (state) {
       card.classList.add(`qs-card-${state}`);
     }
+  }
+
+  // SeLoger's contact form has no action attribute - React intercepts the
+  // submit and calls its own API. So there is nothing to POST to from here:
+  // the background worker opens the property page in a hidden tab, fills the
+  // live form and clicks its real submit button instead.
+  async function sendToBackground(message) {
+    const res = await chrome.runtime.sendMessage(message);
+    if (!res) {
+      throw new Error('Background worker did not respond');
+    }
+    if (!res.ok) {
+      throw new Error(res.error || 'Background send failed');
+    }
+    return res;
   }
 
   function injectButton(card) {
@@ -139,162 +156,30 @@
     createToast('Submitting in background...', 'info');
 
     try {
-      const res = await fetch(url, {
-        method: 'GET',
-        credentials: 'include',
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'User-Agent': navigator.userAgent
-        }
+      const result = await sendToBackground({
+        type: 'quicksend:send',
+        url,
+        message: MESSAGE,
+        contact: CONTACT
       });
-
-      if (!res.ok) {
-        throw new Error(`Failed to load page: ${res.status}`);
-      }
-
-      const html = await res.text();
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-
-      // Try to find contact form
-      let form = doc.querySelector('form[action*="contact"]') ||
-                 doc.querySelector('form[id*="contact"]') ||
-                 doc.querySelector('form[name*="contact"]') ||
-                 doc.querySelector('form[class*="contact"]') ||
-                 doc.querySelector('form[action*="send"]') ||
-                 doc.querySelector('form');
-
-      if (!form) {
-        throw new Error('No contact form found');
-      }
-
-      // Find message field
-      let messageField = form.querySelector('textarea[name*="message"]') ||
-                         form.querySelector('textarea[id*="message"]') ||
-                         form.querySelector('textarea[placeholder*="message"]') ||
-                         form.querySelector('textarea');
-
-      // Find name
-      let nameField = form.querySelector('input[name*="nom"]') ||
-                      form.querySelector('input[name*="name"]') ||
-                      form.querySelector('input[id*="nom"]') ||
-                      form.querySelector('input[placeholder*="Nom"]') ||
-                      form.querySelector('input[type="text"]:not([name*="search"]):not([type="hidden"])');
-
-      // Find email
-      let emailField = form.querySelector('input[type="email"]') ||
-                       form.querySelector('input[name*="email"]') ||
-                       form.querySelector('input[id*="email"]');
-
-      // Find phone
-      let phoneField = form.querySelector('input[type="tel"]') ||
-                       form.querySelector('input[name*="tel"]') ||
-                       form.querySelector('input[name*="phone"]') ||
-                       form.querySelector('input[id*="tel"]');
-
-      // Fill fields if found
-      if (messageField) {
-        messageField.value = MESSAGE;
-        messageField.dispatchEvent(new Event('input', { bubbles: true }));
-        messageField.dispatchEvent(new Event('change', { bubbles: true }));
-        messageField.dispatchEvent(new Event('blur', { bubbles: true }));
-      }
-
-      if (nameField) {
-        nameField.value = CONTACT.fullName;
-        nameField.dispatchEvent(new Event('input', { bubbles: true }));
-        nameField.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-
-      if (emailField) {
-        emailField.value = CONTACT.email;
-        emailField.dispatchEvent(new Event('input', { bubbles: true }));
-        emailField.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-
-      if (phoneField) {
-        phoneField.value = CONTACT.phone;
-        phoneField.dispatchEvent(new Event('input', { bubbles: true }));
-        phoneField.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-
-      // Try to set "Non propriétaire" if select exists
-      const statusSelects = form.querySelectorAll('select');
-      for (const sel of statusSelects) {
-        const opts = Array.from(sel.options);
-        const match = opts.find(o => o.text.toLowerCase().includes('non propri') || o.text.toLowerCase().includes('locataire'));
-        if (match) {
-          sel.value = match.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }
-
-      // Uncheck opt-in checkboxes
-      const checkboxes = form.querySelectorAll('input[type="checkbox"]');
-      for (const cb of checkboxes) {
-        const label = cb.closest('label') || form.querySelector(`label[for="${cb.id}"]`);
-        const text = (label?.textContent || cb.name || cb.value || '').toLowerCase();
-        if (text.includes('ne souhaite pas') || text.includes('pas recevoir') || text.includes('suggestions') || text.includes('similaires')) {
-          if (cb.checked) {
-            cb.checked = false;
-            cb.dispatchEvent(new Event('change', { bubbles: true }));
-            cb.dispatchEvent(new Event('click', { bubbles: true }));
-          }
-        }
-      }
-
-      // Build form data
-      const formData = new FormData(form);
-      if (messageField && !formData.has(messageField.name || 'message')) {
-        formData.set(messageField.name || 'message', MESSAGE);
-      }
-      if (nameField) {
-        const key = nameField.name || 'nom';
-        if (!formData.has(key)) formData.set(key, CONTACT.fullName);
-      }
-      if (emailField) {
-        const key = emailField.name || 'email';
-        if (!formData.has(key)) formData.set(key, CONTACT.email);
-      }
-      if (phoneField) {
-        const key = phoneField.name || 'telephone';
-        if (!formData.has(key)) formData.set(key, CONTACT.phone);
-      }
-
-      // Determine action
-      let action = form.getAttribute('action') || '';
-      if (action && !action.startsWith('http')) {
-        try {
-          action = new URL(action, url).href;
-        } catch (e) {
-          action = url;
-        }
-      } else if (!action) {
-        action = url;
-      }
-
-      // Submit in background
-      await fetch(action, {
-        method: form.method || 'POST',
-        body: formData,
-        credentials: 'include',
-        headers: {
-          'Accept': 'text/html,application/json,*/*'
-        }
-      });
+      console.log('[SeLoger QuickSend] result:', JSON.stringify(result));
 
       btn.classList.remove('quick-send-processing');
       btn.textContent = 'Sent ✓';
       btn.classList.add('quick-send-success');
       setCardState(card, 'success');
-      createToast('Message sent successfully', 'success');
+      if (result.unfilled && result.unfilled.length) {
+        createToast(`Sent, but blank required: ${result.unfilled.join(', ')}`, 'info');
+      } else {
+        createToast('Message sent successfully', 'success');
+      }
     } catch (err) {
       console.error('[SeLoger QuickSend]', err);
       btn.classList.remove('quick-send-processing');
       btn.textContent = 'Failed ✗';
       btn.classList.add('quick-send-error');
       setCardState(card, 'error');
-      createToast('Submission failed', 'error');
+      createToast(`Failed: ${err.message}`, 'error');
     } finally {
       isProcessing = false;
       setTimeout(() => {
